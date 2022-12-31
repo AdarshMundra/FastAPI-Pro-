@@ -1,6 +1,7 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response, Depends, status, Form
+from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -10,7 +11,7 @@ from passlib.context import CryptContext
 from fastapi_login import LoginManager
 import os
 from dotenv import load_dotenv
-# from datetime import datetime, timedelta
+from datetime import datetime, timedelta
 
 load_dotenv()
 SECRET_KEY = os.getenv('SECRET_KEY')
@@ -69,16 +70,57 @@ def root(request: Request):
 def get_login(request: Request):
     return templates.TemplateResponse("login.html", {"request": request, "title": "FriendConnect - Login"})
 
-# @app.post("/login")
-# def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
-#     user = authenticate_user(username=form_data.username, password=form_data.password)
-#     if not user:
-#         return templates.TemplateResponse("login.html", {"request": request, "title": "FriendConnect - Login", "invalid": True}, status_code=status.HTTP_401_UNAUTHORIZED)
-#     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRES_MINUTES)
-#     access_token = manager.create_access_token(
-#         data={"sub": user.username},
-#         expires=access_token_expires
-#     )
-#     resp = RedirectResponse("/home", status_code=status.HTTP_302_FOUND)
-#     manager.set_cookie(resp,access_token)
-#     return resp
+@app.post("/login")
+def login(request: Request,response:Response, form_data: OAuth2PasswordRequestForm = Depends()):
+    user = authenticate_user(username=form_data.username, password=form_data.password)
+    if not user:
+        return templates.TemplateResponse("login.html", {"request": request, "title": "FriendConnect - Login", "invalid": True}, status_code=status.HTTP_401_UNAUTHORIZED)
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRES_MINUTES)
+    access_token = manager.create_access_token(
+        data={"sub": user.username},
+        expires=access_token_expires
+    )
+    resp = RedirectResponse("/home", status_code=status.HTTP_302_FOUND)
+    manager.set_cookie(resp,access_token)
+    return resp
+class NotAuthenticatedException(Exception):
+    pass
+
+def not_authenticated_exception_handler(request, exception):
+    return RedirectResponse("/login")
+
+manager.not_authenticated_exception = NotAuthenticatedException
+app.add_exception_handler(NotAuthenticatedException, not_authenticated_exception_handler)
+
+@app.get("/logout", response_class=RedirectResponse)
+def logout():
+    response = RedirectResponse("/")
+    manager.set_cookie(response, None)
+    return response
+
+@app.get("/home")
+def home(request: Request, user: User = Depends(manager)):
+    user = User(**dict(user))
+    return templates.TemplateResponse("home.html", {"request": request, "title": "FriendConnect - Home", "user": user})
+
+@app.get("/register", response_class=HTMLResponse)
+def get_register(request: Request):
+    return templates.TemplateResponse("register.html",{"request": request, "title": "FriendConnect - Register"})
+
+@app.post("/register")
+def register(request: Request, username: str = Form(...), name: str = Form(...), password: str = Form(...), email: str = Form(...)):
+    hashed_password = get_hashed_password(password)
+    invalid = False
+    for db_username in users.keys():
+        if username == db_username:
+            invalid = True
+        elif users[db_username]["email"] == email:
+            invalid = True
+    
+    if invalid:
+        return templates.TemplateResponse("register.html",{"request": request, "title": "FriendConnect - Register", "invalid": True},status_code=status.HTTP_400_BAD_REQUEST)
+    
+    users[username] = jsonable_encoder(UserDB(username=username,email=email,name=name,hashed_password=hashed_password))
+    response = RedirectResponse("/login",status_code=status.HTTP_302_FOUND)
+    manager.set_cookie(response,None)
+    return response
